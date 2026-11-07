@@ -1,0 +1,2034 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LateLess - School & Transit Management</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f7ff',
+                            100: '#e0effe',
+                            500: '#2563eb',
+                            600: '#1d4ed8',
+                            700: '#1e40af',
+                            800: '#1e3a8a',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .rtl { direction: rtl; }
+        .ltr { direction: ltr; }
+        /* Custom smooth scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col transition-colors duration-200">
+
+    <!-- Firebase App Configuration Scripts & Global Realtime Firestore Sync -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'lateless-app-v3';
+        let db = null;
+        let auth = null;
+
+        try {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth().then(() => {
+                    setupCloudListeners();
+                }).catch(console.error);
+            }
+        } catch (e) {
+            console.warn("Firebase running with LocalStorage sync mode fallback", e);
+        }
+
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+
+        // REALTIME FIRESTORE LISTENER (Cloud Synchronization across all Google Accounts)
+        function setupCloudListeners() {
+            if (!db) return;
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'appState', 'mainDoc');
+            
+            onSnapshot(docRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    const data = snapshot.data();
+                    if (data) {
+                        // Merge registered users dynamically so no created user is ever lost across Google accounts
+                        if (data.usersDb && Array.isArray(data.usersDb)) {
+                            const existingMap = new Map();
+                            window.state.usersDb.forEach(u => existingMap.set(u.username.toLowerCase(), u));
+                            data.usersDb.forEach(u => existingMap.set(u.username.toLowerCase(), u));
+                            window.state.usersDb = Array.from(existingMap.values());
+                        }
+                        if (data.classes) window.state.classes = data.classes;
+                        if (data.reports) window.state.reports = data.reports;
+                        if (data.homeworks) window.state.homeworks = data.homeworks;
+                        if (data.posts) window.state.posts = data.posts;
+                        
+                        window.saveToLocalStorage();
+                        window.refreshCurrentViews();
+                    }
+                } else {
+                    // Seed initial document to cloud
+                    window.syncToCloud();
+                }
+            }, (error) => {
+                console.warn("Firestore snapshot listener:", error);
+            });
+        }
+    </script>
+
+    <!-- Main App Layout -->
+    <div id="app" class="flex-grow flex flex-col min-h-screen">
+        <!-- TOP HEADER & NAVBAR -->
+        <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16 items-center">
+                    <!-- Logo & Tagline -->
+                    <div class="flex items-center space-x-3 cursor-pointer" onclick="navigateTo('class')">
+                        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-md">
+                            L
+                        </div>
+                        <div>
+                            <span class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">LateLess</span>
+                            <span class="hidden sm:inline-block text-xs bg-blue-100 text-blue-700 font-semibold px-2 py-0.5 rounded-full ml-2">v3.0 Persistent</span>
+                        </div>
+                    </div>
+
+                    <!-- Right Controls: Admin Buttons, Teacher Student List, Language Picker, User Info -->
+                    <div class="flex items-center space-x-2 sm:space-x-3">
+                        <!-- Student Users List Button (Teacher/Admin only) -->
+                        <button id="viewStudentsBtn" onclick="openStudentListModal()" class="hidden bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs sm:text-sm font-semibold px-3 py-1.5 rounded-lg transition-all flex items-center space-x-1.5">
+                            <i class="fa-solid fa-users-gear"></i>
+                            <span data-i18n="studentUsersBtn">Schülerliste</span>
+                        </button>
+
+                        <!-- Admin / Teacher Create User Button -->
+                        <button id="createUserBtn" onclick="openCreateUserModal()" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-medium px-3 py-1.5 rounded-lg transition-all shadow-sm flex items-center space-x-1">
+                            <i class="fa-solid fa-user-plus"></i>
+                            <span data-i18n="createUser">User erstellen</span>
+                        </button>
+
+                        <!-- Language Selector Dropdown -->
+                        <div class="relative inline-block text-left">
+                            <select id="languageSelect" onchange="changeLanguage(this.value)" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm rounded-lg px-2 py-1.5 font-medium border-0 focus:ring-2 focus:ring-blue-500 cursor-pointer">
+                                <option value="de">🇩🇪 Deutsch</option>
+                                <option value="en">🇬🇧 English</option>
+                                <option value="ar">🇸🇦 العربية</option>
+                                <option value="tr">🇹🇷 Türkçe</option>
+                                <option value="fa">🇮🇷 فارسی</option>
+                                <option value="es">🇪🇸 Español</option>
+                                <option value="ru">🇷🇺 Русский</option>
+                            </select>
+                        </div>
+
+                        <!-- User Profile / Auth State -->
+                        <div id="userInfo" class="flex items-center space-x-2">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- NAVIGATION TABS -->
+            <nav id="mainNav" class="bg-slate-50 border-t border-slate-200 px-2 sm:px-4 overflow-x-auto scrollbar-none hidden">
+                <div class="max-w-7xl mx-auto flex space-x-1 sm:space-x-2 py-2">
+                    <button onclick="navigateTo('class')" data-nav="class" class="nav-tab px-3 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-2 whitespace-nowrap transition-colors">
+                        <i class="fa-solid fa-chalkboard-user"></i>
+                        <span data-i18n="navClass">Klasse</span>
+                    </button>
+                    <button onclick="navigateTo('community')" data-nav="community" class="nav-tab px-3 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-2 whitespace-nowrap transition-colors">
+                        <i class="fa-solid fa-users"></i>
+                        <span data-i18n="navCommunity">L-Community</span>
+                    </button>
+                    <button onclick="navigateTo('transport')" data-nav="transport" class="nav-tab px-3 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-2 whitespace-nowrap transition-colors">
+                        <i class="fa-solid fa-bus-simple"></i>
+                        <span data-i18n="navTransport">ÖPNV Status</span>
+                    </button>
+                    <button id="navTeacherDash" onclick="navigateTo('teacher-dash')" data-nav="teacher-dash" class="nav-tab px-3 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-2 whitespace-nowrap transition-colors">
+                        <i class="fa-solid fa-chart-line"></i>
+                        <span data-i18n="navTeacherDash">Lehrer Dashboard</span>
+                    </button>
+                    <button onclick="navigateTo('ask-me')" data-nav="ask-me" class="nav-tab px-3 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-2 whitespace-nowrap transition-colors">
+                        <i class="fa-solid fa-wand-magic-sparkles text-amber-500"></i>
+                        <span data-i18n="navAskMe">Frag Mich!</span>
+                    </button>
+                </div>
+            </nav>
+        </header>
+
+        <!-- MAIN BODY CONTENT AREA -->
+        <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+            <!-- VIEW: LOGIN & GOOGLE AUTH -->
+            <section id="view-login" class="max-w-md mx-auto my-6 bg-white p-6 sm:p-8 rounded-2xl shadow-xl border border-slate-100">
+                <div class="text-center mb-6">
+                    <div class="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-3 text-blue-600 text-3xl">
+                        <i class="fa-solid fa-graduation-cap"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold text-slate-800" data-i18n="welcomeTitle">Willkommen bei LateLess</h2>
+                    <p class="text-sm text-slate-500 mt-1" data-i18n="welcomeSubtitle">Pünktlichkeit & Kommunikation leicht gemacht</p>
+                </div>
+
+                <!-- STEP 1: GOOGLE AUTH SIMULATION -->
+                <div id="googleAuthStep" class="space-y-4">
+                    <div class="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs leading-relaxed">
+                        <i class="fa-solid fa-shield-halved mr-1"></i>
+                        <span data-i18n="googleAuthNotice">Schritt 1: Authentifizieren Sie sich zuerst mit Ihrem Google-Konto.</span>
+                    </div>
+
+                    <button onclick="simulateGoogleAuth()" class="w-full flex items-center justify-center space-x-3 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold py-3 px-4 rounded-xl shadow-sm transition-all text-sm">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24">
+                            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                        </svg>
+                        <span id="googleAuthBtnText" data-i18n="loginWithGoogle">Mit Google Anmelden</span>
+                    </button>
+                </div>
+
+                <!-- STEP 2: APP LOGIN (TEACHER / STUDENT / ADMIN) -->
+                <div id="appAuthStep" class="hidden space-y-5">
+                    <div id="activeGoogleBanner" class="bg-blue-50 border border-blue-200 text-blue-800 px-3 py-2 rounded-xl text-xs flex justify-between items-center">
+                        <span class="truncate"><i class="fa-brands fa-google text-blue-600 mr-1.5"></i> <strong id="googleAccountDisplay">user@gmail.com</strong></span>
+                        <button onclick="switchGoogleAccount()" class="text-blue-600 hover:underline font-bold text-xs ml-2">Wechseln</button>
+                    </div>
+
+                    <div class="flex border-b border-slate-200">
+                        <button onclick="setLoginRole('student')" id="tabStudent" class="w-1/2 py-2.5 text-center text-sm font-semibold border-b-2 border-blue-600 text-blue-600 transition-colors">
+                            <i class="fa-solid fa-user-graduate mr-1"></i> <span data-i18n="studentLogin">Schüler Login</span>
+                        </button>
+                        <button onclick="setLoginRole('teacher')" id="tabTeacher" class="w-1/2 py-2.5 text-center text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors">
+                            <i class="fa-solid fa-chalkboard-user mr-1"></i> <span data-i18n="teacherLogin">Lehrer / Admin Login</span>
+                        </button>
+                    </div>
+
+                    <form onsubmit="handleAppLogin(event)" class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1" data-i18n="username">Benutzername</label>
+                            <input type="text" id="loginUsername" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm" placeholder="Username / Admin">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1" data-i18n="password">Passwort</label>
+                            <input type="password" id="loginPassword" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm" placeholder="••••••••">
+                        </div>
+
+                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl shadow-md transition-all text-sm">
+                            <span data-i18n="loginBtn">Einloggen</span>
+                        </button>
+                    </form>
+
+                    <!-- Admin Credential Quick Hint -->
+                    <div class="pt-3 border-t border-slate-100 text-center">
+                        <span class="text-xs text-slate-400">Standard Admin: <strong class="text-slate-600">Admin</strong> / <strong class="text-slate-600">Admin@1819</strong></span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 1: CLASS MANAGEMENT & REPORTS -->
+            <section id="view-class" class="hidden space-y-6">
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+                    <div>
+                        <h1 class="text-xl sm:text-2xl font-bold text-slate-800" data-i18n="classTitle">Klassenübersicht</h1>
+                        <p class="text-sm text-slate-500" data-i18n="classSubtitle">Wählen Sie Ihre Klasse, um Verspätungen zu melden oder Hausaufgaben hochzuladen.</p>
+                    </div>
+                    <button id="addClassBtn" onclick="openCreateClassModal()" class="hidden bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-medium text-sm flex items-center space-x-2 shadow-sm transition-all">
+                        <i class="fa-solid fa-plus"></i>
+                        <span data-i18n="addClass">Neue Klasse</span>
+                    </button>
+                </div>
+
+                <!-- Classes Grid -->
+                <div id="classesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <!-- CLASS DETAIL VIEW SECTION -->
+                <div id="classDetailSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-6">
+                    <div class="flex justify-between items-center border-b border-slate-100 pb-4">
+                        <div>
+                            <button onclick="closeClassDetail()" class="text-xs font-semibold text-blue-600 hover:text-blue-800 mb-1 flex items-center space-x-1">
+                                <i class="fa-solid fa-arrow-left"></i> <span data-i18n="backToClasses">Zurück zu allen Klassen</span>
+                            </button>
+                            <h2 id="currentClassName" class="text-2xl font-bold text-slate-800">Klasse 10A</h2>
+                        </div>
+                        <div id="studentActionsNav" class="flex space-x-2">
+                            <button onclick="openReportModal()" class="bg-amber-500 hover:bg-amber-600 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center space-x-1.5 shadow-sm">
+                                <i class="fa-solid fa-clock"></i>
+                                <span data-i18n="addReportBtn">Verspätung Melden</span>
+                            </button>
+                            <button onclick="openHomeworkModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center space-x-1.5 shadow-sm">
+                                <i class="fa-solid fa-file-arrow-up"></i>
+                                <span data-i18n="uploadHomeworkBtn">Hausaufgabe Upload</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Reports List -->
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-800 mb-3" data-i18n="reportsHeader">Eingereichte Verspätungsberichte</h3>
+                        <div id="classReportsList" class="space-y-4">
+                            <!-- Reports Rendered Here -->
+                        </div>
+                    </div>
+
+                    <!-- Homework List -->
+                    <div class="pt-6 border-t border-slate-100">
+                        <h3 class="text-lg font-bold text-slate-800 mb-3" data-i18n="homeworkHeader">Hochgeladene Hausaufgaben</h3>
+                        <div id="classHomeworkList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <!-- Homework Items Rendered Here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 2: L-COMMUNITY FORUM -->
+            <section id="view-community" class="hidden space-y-6">
+                <div class="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 sm:p-8 text-white shadow-lg">
+                    <h1 class="text-2xl sm:text-3xl font-bold" data-i18n="communityWelcome">Willkommen bei L-Community</h1>
+                    <p class="text-blue-100 mt-2 max-w-2xl text-sm sm:text-base" data-i18n="communityIntro">Wenn Sie eine Frage oder Beschwerde haben, schreiben Sie sie hier. Community-Mitglieder und Lehrer antworten Ihnen!</p>
+                </div>
+
+                <!-- Create Post Box -->
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+                    <form onsubmit="handleCreatePost(event)" class="space-y-3">
+                        <textarea id="postContent" required rows="3" class="w-full p-3.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm resize-none" placeholder="Was liegt Ihnen auf dem Herzen? (Frage, Beschwerde, Feedback)..."></textarea>
+                        <div class="flex justify-end">
+                            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-5 py-2.5 rounded-xl shadow-sm flex items-center space-x-2">
+                                <i class="fa-solid fa-paper-plane"></i>
+                                <span data-i18n="postBtn">Beitrag Veröffentlichen</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Community Feed -->
+                <div id="communityFeed" class="space-y-6">
+                    <!-- Dynamic Posts -->
+                </div>
+            </section>
+
+            <!-- VIEW 3: PUBLIC TRANSPORT STATUS (AI-POWERED) -->
+            <section id="view-transport" class="hidden space-y-6">
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-xl font-bold">
+                            <i class="fa-solid fa-bus"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-800" data-i18n="transportHeader">ÖPNV Live-Status & Verspätungen</h2>
+                            <p class="text-xs text-slate-500" data-i18n="transportSub">Welche öffentlichen Verkehrsmittel benötigen Sie heute?</p>
+                        </div>
+                    </div>
+
+                    <!-- Search Form -->
+                    <form onsubmit="handleTransportSearch(event)" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1" data-i18n="fromLocation">Von (Start)</label>
+                            <input type="text" id="transFrom" required class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="z.B. Hauptbahnhof">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1" data-i18n="toLocation">Nach (Ziel)</label>
+                            <input type="text" id="transTo" required class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="z.B. Schulzentrum">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1" data-i18n="dateLabel">Datum</label>
+                            <input type="date" id="transDate" required class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1" data-i18n="timeLabel">Uhrzeit</label>
+                            <input type="time" id="transTime" required class="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div class="flex items-end">
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-xl shadow-sm text-sm flex items-center justify-center space-x-2 h-[42px]">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                                <span data-i18n="searchBtn">Prüfen</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- AI Transit Results Output -->
+                <div id="transportResult" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <!-- Populated dynamically via Gemini AI -->
+                </div>
+            </section>
+
+            <!-- VIEW 4: TEACHER DASHBOARD -->
+            <section id="view-teacher-dash" class="hidden space-y-6">
+                <div class="bg-slate-900 text-white p-6 sm:p-8 rounded-2xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                        <span class="text-xs font-semibold text-blue-400 uppercase tracking-wider">Teacher Analytics & Control</span>
+                        <h1 class="text-2xl sm:text-3xl font-bold mt-1" data-i18n="teacherDashboardTitle">Lehrer Kontrollzentrum</h1>
+                    </div>
+                    <div class="flex space-x-4">
+                        <div class="bg-slate-800 px-4 py-3 rounded-xl border border-slate-700 text-center">
+                            <div id="dashTotalReports" class="text-2xl font-bold text-amber-400">0</div>
+                            <div class="text-xs text-slate-400" data-i18n="dashTotalLate">Gesamt Verspätungen</div>
+                        </div>
+                        <div class="bg-slate-800 px-4 py-3 rounded-xl border border-slate-700 text-center">
+                            <div id="dashTotalClasses" class="text-2xl font-bold text-blue-400">0</div>
+                            <div class="text-xs text-slate-400" data-i18n="dashClasses">Aktive Klassen</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Tables -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Recent Delayed Students -->
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center space-x-2">
+                            <i class="fa-solid fa-triangle-exclamation text-amber-500"></i>
+                            <span data-i18n="delayedStudentsList">Verspätete Schüler (Letzte Meldungen)</span>
+                        </h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-slate-50 text-slate-500 border-b border-slate-200 text-xs uppercase">
+                                    <tr>
+                                        <th class="p-2.5">Schüler</th>
+                                        <th class="p-2.5">Klasse</th>
+                                        <th class="p-2.5">Grund / Foto</th>
+                                        <th class="p-2.5">Aktion</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dashLateTable" class="divide-y divide-slate-100">
+                                    <!-- Dynamic rows -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Homework Submissions Overview -->
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center space-x-2">
+                            <i class="fa-solid fa-book-open text-indigo-500"></i>
+                            <span data-i18n="homeworkOverview">Eingereichte Hausaufgaben</span>
+                        </h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-slate-50 text-slate-500 border-b border-slate-200 text-xs uppercase">
+                                    <tr>
+                                        <th class="p-2.5">Schüler</th>
+                                        <th class="p-2.5">Titel</th>
+                                        <th class="p-2.5">Datei</th>
+                                        <th class="p-2.5">Aktion</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dashHomeworkTable" class="divide-y divide-slate-100">
+                                    <!-- Dynamic rows -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 5: ASK ME! (GEMINI AI ASSISTANT) -->
+            <section id="view-ask-me" class="hidden max-w-4xl mx-auto space-y-4">
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center space-x-4">
+                    <div class="w-12 h-12 rounded-full bg-gradient-to-tr from-amber-400 to-orange-500 text-white flex items-center justify-center text-2xl shadow-md">
+                        <i class="fa-solid fa-robot"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-xl font-bold text-slate-800" data-i18n="askMeTitle">Frag Mich! (KI Assistent)</h2>
+                        <p class="text-xs text-slate-500" data-i18n="askMeSubtitle">Stellen Sie Fragen zu Verspätungsregeln, Busverbindungen oder Schulaufgaben.</p>
+                    </div>
+                </div>
+
+                <!-- Chat Messages Window -->
+                <div id="chatMessages" class="bg-slate-100 rounded-2xl p-4 sm:p-6 h-[420px] overflow-y-auto space-y-4 border border-slate-200">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">KI</div>
+                        <div class="bg-white p-4 rounded-2xl shadow-sm text-sm text-slate-700 max-w-lg border border-slate-100" data-i18n="askMeWelcomeMsg">
+                            Hallo! Ich bin dein intelligenter LateLess Schul-Assistent. Wie kann ich dir heute helfen?
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Input Form -->
+                <form onsubmit="handleAskMeSubmit(event)" class="flex space-x-2">
+                    <input type="text" id="askMeInput" required class="flex-grow px-4 py-3 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500 shadow-sm" placeholder="Schreibe deine Frage hier...">
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-xl shadow-md text-sm flex items-center space-x-2">
+                        <span>Senden</span>
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- MODAL: CREATE USER (Admin or Teacher) -->
+    <div id="createUserModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 relative animate-fade-in">
+            <button onclick="closeModal('createUserModal')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <h3 id="modalUserTitle" class="text-xl font-bold text-slate-800">Neuen Benutzer Erstellen</h3>
+            
+            <form onsubmit="handleCreateUser(event)" class="space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Vorname</label>
+                        <input type="text" id="regFirstName" required class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Nachname</label>
+                        <input type="text" id="regLastName" required class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                </div>
+                
+                <div id="emailFieldGroup">
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">E-Mail Adresse</label>
+                    <input type="email" id="regEmail" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Benutzername</label>
+                    <input type="text" id="regUsername" required class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Passwort</label>
+                    <input type="password" id="regPassword" required class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div id="roleSelectGroup" class="hidden">
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Rolle</label>
+                    <select id="regRole" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="student">Schüler</option>
+                        <option value="teacher">Lehrer</option>
+                    </select>
+                </div>
+
+                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl shadow-sm text-sm mt-2">
+                    Konto Registrieren
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: STUDENT USERS LIST & PASSWORD MANAGEMENT (Teacher/Admin View) -->
+    <div id="studentListModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-4 relative max-h-[85vh] flex flex-col">
+            <button onclick="closeModal('studentListModal')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <div>
+                <h3 class="text-xl font-bold text-slate-800 flex items-center space-x-2">
+                    <i class="fa-solid fa-users text-indigo-600"></i>
+                    <span>Verwaltete Schüler-Konten</span>
+                </h3>
+                <p class="text-xs text-slate-500 mt-0.5">Lehrer können hier bestehende Schülerkonten einsehen und Passwörter ändern.</p>
+            </div>
+
+            <div class="overflow-y-auto flex-grow border border-slate-200 rounded-xl">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-100 text-slate-600 text-xs uppercase sticky top-0 border-b border-slate-200">
+                        <tr>
+                            <th class="p-3">Name</th>
+                            <th class="p-3">Benutzername</th>
+                            <th class="p-3">Aktuelles Passwort</th>
+                            <th class="p-3 text-right">Aktion</th>
+                        </tr>
+                    </thead>
+                    <tbody id="studentAccountsTable" class="divide-y divide-slate-100">
+                        <!-- Dynamic Student Users Rows -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD CLASS (Teacher Only) -->
+    <div id="createClassModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4 relative">
+            <button onclick="closeModal('createClassModal')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <h3 class="text-xl font-bold text-slate-800">Neue Klasse Anlegen</h3>
+            <form onsubmit="handleCreateClass(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Klassenname</label>
+                    <input type="text" id="classNameInput" required placeholder="z.B. Klasse 9B, Physik GK" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-xl shadow-sm text-sm">
+                    Klasse Speichern
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD LATE REPORT (Student) -->
+    <div id="addReportModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 relative max-h-[90vh] overflow-y-auto">
+            <button onclick="closeModal('addReportModal')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <h3 class="text-xl font-bold text-slate-800">Verspätung Melden</h3>
+            <form onsubmit="handleSubmitReport(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Grund der Verspätung</label>
+                    <textarea id="reportReason" required rows="3" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Warum kommen Sie zu spät? (z.B. Busausfall, Zugverspätung)..."></textarea>
+                </div>
+
+                <!-- Camera / Photo Attach Option -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Foto / Kamera Beweis anheften</label>
+                    <div class="flex space-x-2 mb-2">
+                        <button type="button" onclick="triggerCameraCapture()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs py-2 rounded-xl font-semibold border border-slate-300 flex items-center justify-center space-x-1">
+                            <i class="fa-solid fa-camera"></i>
+                            <span>Foto Aufnehmen</span>
+                        </button>
+                        <input type="file" id="reportFileInput" accept="image/*" class="hidden" onchange="handleFileSelect(event)">
+                        <button type="button" onclick="document.getElementById('reportFileInput').click()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs py-2 rounded-xl font-semibold border border-slate-300 flex items-center justify-center space-x-1">
+                            <i class="fa-solid fa-upload"></i>
+                            <span>Datei Wählen</span>
+                        </button>
+                    </div>
+                    <!-- Photo Preview -->
+                    <div id="photoPreviewContainer" class="hidden relative rounded-xl border border-slate-200 overflow-hidden h-32 bg-slate-50 flex items-center justify-center">
+                        <img id="photoPreview" src="" class="max-h-full object-contain">
+                        <button type="button" onclick="clearPhotoPreview()" class="absolute top-2 right-2 bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" class="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2.5 rounded-xl shadow-sm text-sm">
+                    Bericht Absenden
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: HOMEWORK UPLOAD (Student) -->
+    <div id="uploadHomeworkModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4 relative">
+            <button onclick="closeModal('uploadHomeworkModal')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <h3 class="text-xl font-bold text-slate-800">Hausaufgabe Hochladen</h3>
+            <form onsubmit="handleSubmitHomework(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Titel / Fach</label>
+                    <input type="text" id="hwTitle" required placeholder="z.B. Mathe Übungsblatt 4" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Beschreibung / Text</label>
+                    <textarea id="hwDesc" rows="2" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Zusätzliche Anmerkungen..."></textarea>
+                </div>
+                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl shadow-sm text-sm">
+                    Einreichen
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- GLOBAL NOTIFICATION TOAST -->
+    <div id="toast" class="fixed bottom-5 right-5 bg-slate-800 text-white px-4 py-3 rounded-xl shadow-2xl border border-slate-700 hidden z-50 flex items-center space-x-3 text-sm">
+        <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400"></i>
+        <span id="toastMsg">Nachricht</span>
+    </div>
+
+    <!-- APPLICATION LOGIC, STATE MANAGEMENT & PERSISTENCE SCRIPT -->
+    <script>
+        // TRANSLATIONS DICTIONARY (Supports DE, EN, AR, TR, FA, ES, RU)
+        const i18n = {
+            de: {
+                createUser: "User erstellen",
+                studentUsersBtn: "Schülerliste",
+                navClass: "Klasse",
+                navCommunity: "L-Community",
+                navTransport: "ÖPNV Status",
+                navTeacherDash: "Lehrer Dashboard",
+                navAskMe: "Frag Mich!",
+                welcomeTitle: "Willkommen bei LateLess",
+                welcomeSubtitle: "Pünktlichkeit & Kommunikation leicht gemacht",
+                googleAuthNotice: "Schritt 1: Authentifizieren Sie sich zuerst mit Ihrem Google-Konto.",
+                loginWithGoogle: "Mit Google Anmelden",
+                studentLogin: "Schüler Login",
+                teacherLogin: "Lehrer / Admin Login",
+                username: "Benutzername",
+                password: "Passwort",
+                loginBtn: "Einloggen",
+                classTitle: "Klassenübersicht",
+                classSubtitle: "Wählen Sie Ihre Klasse, um Verspätungen zu melden oder Hausaufgaben hochzuladen.",
+                addClass: "Neue Klasse",
+                backToClasses: "Zurück zu allen Klassen",
+                addReportBtn: "Verspätung Melden",
+                uploadHomeworkBtn: "Hausaufgabe Upload",
+                reportsHeader: "Eingereichte Verspätungsberichte",
+                homeworkHeader: "Hochgeladene Hausaufgaben",
+                communityWelcome: "Willkommen bei L-Community",
+                communityIntro: "Wenn Sie eine Frage oder Beschwerde haben, schreiben Sie sie hier. Community-Mitglieder und Lehrer antworten Ihnen!",
+                postBtn: "Beitrag Veröffentlichen",
+                transportHeader: "ÖPNV Live-Status & Verspätungen",
+                transportSub: "Welche öffentlichen Verkehrsmittel benötigen Sie heute?",
+                fromLocation: "Von (Start)",
+                toLocation: "Nach (Ziel)",
+                dateLabel: "Datum",
+                timeLabel: "Uhrzeit",
+                searchBtn: "Prüfen",
+                teacherDashboardTitle: "Lehrer Kontrollzentrum",
+                dashTotalLate: "Gesamt Verspätungen",
+                dashClasses: "Aktive Klassen",
+                delayedStudentsList: "Verspätete Schüler (Letzte Meldungen)",
+                homeworkOverview: "Eingereichte Hausaufgaben",
+                askMeTitle: "Frag Mich! (KI Assistent)",
+                askMeSubtitle: "Stellen Sie Fragen zu Verspätungsregeln, Busverbindungen oder Schulaufgaben.",
+                askMeWelcomeMsg: "Hallo! Ich bin dein intelligenter LateLess Schul-Assistent. Wie kann ich dir heute helfen?"
+            },
+            en: {
+                createUser: "Create User",
+                studentUsersBtn: "Student List",
+                navClass: "Class",
+                navCommunity: "L-Community",
+                navTransport: "Public Transport Status",
+                navTeacherDash: "Teacher Dashboard",
+                navAskMe: "Ask Me!",
+                welcomeTitle: "Welcome to LateLess",
+                welcomeSubtitle: "Punctuality & Communication Made Easy",
+                googleAuthNotice: "Step 1: Authenticate with your Google Account first.",
+                loginWithGoogle: "Sign in with Google",
+                studentLogin: "Student Login",
+                teacherLogin: "Teacher / Admin Login",
+                username: "Username",
+                password: "Password",
+                loginBtn: "Log In",
+                classTitle: "Class Overview",
+                classSubtitle: "Select your class to report delays or upload homework.",
+                addClass: "New Class",
+                backToClasses: "Back to All Classes",
+                addReportBtn: "Report Delay",
+                uploadHomeworkBtn: "Upload Homework",
+                reportsHeader: "Submitted Late Reports",
+                homeworkHeader: "Uploaded Homework",
+                communityWelcome: "Welcome to L-Community",
+                communityIntro: "If you have a question or complaint, write it here. Community members and teachers will answer!",
+                postBtn: "Publish Post",
+                transportHeader: "Public Transport Live Status & Delays",
+                transportSub: "Which public transport service do you need information for?",
+                fromLocation: "From (Start)",
+                toLocation: "To (Destination)",
+                dateLabel: "Date",
+                timeLabel: "Time",
+                searchBtn: "Check Status",
+                teacherDashboardTitle: "Teacher Control Center",
+                dashTotalLate: "Total Delays",
+                dashClasses: "Active Classes",
+                delayedStudentsList: "Delayed Students (Recent Reports)",
+                homeworkOverview: "Submitted Homework",
+                askMeTitle: "Ask Me! (AI Assistant)",
+                askMeSubtitle: "Ask questions about lateness policies, bus connections, or homework.",
+                askMeWelcomeMsg: "Hello! I am your intelligent LateLess school assistant. How can I help you today?"
+            },
+            ar: {
+                createUser: "إنشاء مستخدم",
+                studentUsersBtn: "قائمة الطلاب",
+                navClass: "الفصل",
+                navCommunity: "مجتمع L",
+                navTransport: "حالة النقل العام",
+                navTeacherDash: "لوحة المعلم",
+                navAskMe: "اسألني!",
+                welcomeTitle: "مرحباً بكم في LateLess",
+                welcomeSubtitle: "الانضباط والتواصل بأسهل طريقة",
+                googleAuthNotice: "الخطوة 1: يرجى تسجيل الدخول بحساب Google أولاً.",
+                loginWithGoogle: "تسجيل الدخول باستخدام Google",
+                studentLogin: "دخول الطالب",
+                teacherLogin: "دخول المعلم / الأدمن",
+                username: "اسم المستخدم",
+                password: "كلمة المرور",
+                loginBtn: "تسجيل الدخول",
+                classTitle: "نظرة عامة على الفصول",
+                classSubtitle: "اختر فصلك للإبلاغ عن التأخير أو رفع الواجبات.",
+                addClass: "فصل جديد",
+                backToClasses: "العودة لجميع الفصول",
+                addReportBtn: "الإبلاغ عن تأخير",
+                uploadHomeworkBtn: "رفع الواجب",
+                reportsHeader: "تقارير التأخير المقدمة",
+                homeworkHeader: "الواجبات المرفوعة",
+                communityWelcome: "مرحباً بكم في مجتمع L",
+                communityIntro: "إذا كان لديك سؤال أو شكوى، اكتبها هنا وسيجيبك المعلمون والأعضاء!",
+                postBtn: "نشر المشاركة",
+                transportHeader: "حالة مواصلات النقل العام والتأخيرات",
+                transportSub: "ما هي وسيلة النقل العام التي تحتاج معلومات عنها اليوم؟",
+                fromLocation: "من",
+                toLocation: "إلى",
+                dateLabel: "التاريخ",
+                timeLabel: "الوقت",
+                searchBtn: "فحص",
+                teacherDashboardTitle: "مركز تحكم المعلم",
+                dashTotalLate: "إجمالي التأخيرات",
+                dashClasses: "الفصول النشطة",
+                delayedStudentsList: "الطلاب المتأخرون (أحدث التقارير)",
+                homeworkOverview: "الواجبات المقدمة",
+                askMeTitle: "اسألني! (مساعد الذكاء الاصطناعي)",
+                askMeSubtitle: "اطرح أسئلة حول قوانين التأخير، الحافلات أو الواجبات المدرسية.",
+                askMeWelcomeMsg: "أهلاً بك! أنا مساعدك المدرسي الذكي في LateLess. كيف يمكنني مساعدتك اليوم؟"
+            },
+            tr: {
+                createUser: "Kullanıcı Oluştur",
+                studentUsersBtn: "Öğrenci Listesi",
+                navClass: "Sınıf",
+                navCommunity: "L-Topluluğu",
+                navTransport: "Toplu Taşıma Durumu",
+                navTeacherDash: "Öğretmen Paneli",
+                navAskMe: "Bana Sor!",
+                welcomeTitle: "LateLess'e Hoş Geldiniz",
+                welcomeSubtitle: "Zamanlama ve İletişim Artık Çok Kolay",
+                googleAuthNotice: "Adım 1: Önce Google hesabınızla doğrulama yapın.",
+                loginWithGoogle: "Google ile Giriş Yap",
+                studentLogin: "Öğrenci Girişi",
+                teacherLogin: "Öğretmen / Yönetici Girişi",
+                username: "Kullanıcı Adı",
+                password: "Şifre",
+                loginBtn: "Giriş Yap",
+                classTitle: "Sınıf Genel Bakışı",
+                classSubtitle: "Gecikme bildirmek veya ödev yüklemek için sınıfınızı seçin.",
+                addClass: "Yeni Sınıf",
+                backToClasses: "Tüm Sınıflara Dön",
+                addReportBtn: "Gecikme Bildir",
+                uploadHomeworkBtn: "Ödev Yükle",
+                reportsHeader: "Gönderilen Gecikme Raporları",
+                homeworkHeader: "Yüklenen Ödevler",
+                communityWelcome: "L-Topluluğuna Hoş Geldiniz",
+                communityIntro: "Bir sorunuz veya şikayetiniz varsa buraya yazın. Öğretmenler ve üyeler yanıtlayacaktır!",
+                postBtn: "Gönderi Paylaş",
+                transportHeader: "Toplu Taşıma Canlı Durum ve Gecikmeler",
+                transportSub: "Bugün hangi toplu taşıma aracı hakkında bilgiye ihtiyacınız var?",
+                fromLocation: "Nereden",
+                toLocation: "Nereye",
+                dateLabel: "Tarih",
+                timeLabel: "Saat",
+                searchBtn: "Sorgula",
+                teacherDashboardTitle: "Öğretmen Kontrol Merkezi",
+                dashTotalLate: "Toplam Gecikme",
+                dashClasses: "Aktif Sınıflar",
+                delayedStudentsList: "Geciken Öğrenciler (Son Raporlar)",
+                homeworkOverview: "Teslim Edilen Ödevler",
+                askMeTitle: "Bana Sor! (Yapay Zeka Asistanı)",
+                askMeSubtitle: "Gecikme kuralları, otobüs hatları veya ödevler hakkında sorular sorun.",
+                askMeWelcomeMsg: "Merhaba! Ben senin akıllı LateLess okul asistanınım. Bugün sana nasıl yardımcı olabilirim?"
+            },
+            fa: {
+                createUser: "ایجاد کاربر",
+                studentUsersBtn: "لیست دانش‌آموزان",
+                navClass: "کلاس",
+                navCommunity: "انجمن L",
+                navTransport: "وضعیت حمل و نقل عمومی",
+                navTeacherDash: "داشبورد معلم",
+                navAskMe: "از من بپرس!",
+                welcomeTitle: "به LateLess خوش آمدید",
+                welcomeSubtitle: "مدیریت نظم و ارتباطات به ساده‌ترین روش",
+                googleAuthNotice: "مرحله ۱: ابتدا با حساب Google خود وارد شوید.",
+                loginWithGoogle: "ورود با گوگل",
+                studentLogin: "ورود دانش‌آموز",
+                teacherLogin: "ورود معلم / مدیر",
+                username: "نام کاربری",
+                password: "رمز عبور",
+                loginBtn: "ورود",
+                classTitle: "نمای کلی کلاس‌ها",
+                classSubtitle: "کلاس خود را برای گزارش تاخیر یا ارسال تکالیف انتخاب کنید.",
+                addClass: "کلاس جدید",
+                backToClasses: "بازگشت به همه کلاس‌ها",
+                addReportBtn: "گزارش تاخیر",
+                uploadHomeworkBtn: "ارسال تکلیف",
+                reportsHeader: "گزارش‌های تاخیر ثبت شده",
+                homeworkHeader: "تکالیف ارسال شده",
+                communityWelcome: "به انجمن L خوش آمدید",
+                communityIntro: "اگر سوال یا شکایتی دارید، اینجا بنویسید تا معلمان و اعضا پاسخ دهند!",
+                postBtn: "انتشار پست",
+                transportHeader: "وضعیت زنده حمل و نقل عمومی و تاخیرها",
+                transportSub: "به اطلاعات کدام وسیله نقلیه عمومی نیاز دارید؟",
+                fromLocation: "از",
+                toLocation: "به",
+                dateLabel: "تاریخ",
+                timeLabel: "زمان",
+                searchBtn: "بررسی",
+                teacherDashboardTitle: "مرکز مدیریت معلم",
+                dashTotalLate: "مجموع تاخیرها",
+                dashClasses: "کلاس‌های فعال",
+                delayedStudentsList: "دانش‌آموزان با تاخیر (گزارش‌های اخیر)",
+                homeworkOverview: "تکالیف تحویل داده شده",
+                askMeTitle: "از من بپرس! (دستیار هوش مصنوعی)",
+                askMeSubtitle: "سوالات خود را در مورد قوانین تاخیر، اتوبوس‌ها یا تکالیف بپرسید.",
+                askMeWelcomeMsg: "سلام! من دستیار هوشمند مدرسه LateLess شما هستم. چطور می‌توانم کمکتان کنم؟"
+            },
+            es: {
+                createUser: "Crear Usuario",
+                studentUsersBtn: "Lista de Alumnos",
+                navClass: "Clase",
+                navCommunity: "L-Comunidad",
+                navTransport: "Estado del Transporte Público",
+                navTeacherDash: "Panel de Profesores",
+                navAskMe: "¡Pregúntame!",
+                welcomeTitle: "Bienvenido a LateLess",
+                welcomeSubtitle: "Puntualidad y Comunicación Fácil",
+                googleAuthNotice: "Paso 1: Autentícate primero con tu cuenta de Google.",
+                loginWithGoogle: "Iniciar sesión con Google",
+                studentLogin: "Acceso Estudiantes",
+                teacherLogin: "Acceso Profesores / Admin",
+                username: "Usuario",
+                password: "Contraseña",
+                loginBtn: "Iniciar Sesión",
+                classTitle: "Resumen de Clases",
+                classSubtitle: "Selecciona tu clase para reportar retrasos o subir tareas.",
+                addClass: "Nueva Clase",
+                backToClasses: "Volver a Todas las Clases",
+                addReportBtn: "Reportar Retraso",
+                uploadHomeworkBtn: "Subir Tarea",
+                reportsHeader: "Reportes de Retraso Enviados",
+                homeworkHeader: "Tareas Subidas",
+                communityWelcome: "Bienvenido a L-Comunidad",
+                communityIntro: "Si tienes una pregunta o queja, escríbela aquí. ¡La comunidad y los profesores responderán!",
+                postBtn: "Publicar",
+                transportHeader: "Estado en Vivo del Transporte Público",
+                transportSub: "¿Para qué servicio de transporte necesitas información hoy?",
+                fromLocation: "Desde (Origen)",
+                toLocation: "Hasta (Destino)",
+                dateLabel: "Fecha",
+                timeLabel: "Hora",
+                searchBtn: "Consultar",
+                teacherDashboardTitle: "Centro de Control para Profesores",
+                dashTotalLate: "Total de Retrasos",
+                dashClasses: "Clases Activas",
+                delayedStudentsList: "Estudiantes con Retrasos",
+                homeworkOverview: "Tareas Entregadas",
+                askMeTitle: "¡Pregúntame! (Asistente IA)",
+                askMeSubtitle: "Pregunta sobre reglas de retraso, autobuses o tareas.",
+                askMeWelcomeMsg: "¡Hola! Soy tu asistente escolar inteligente de LateLess. ¿Cómo puedo ayudarte hoy?"
+            },
+            ru: {
+                createUser: "Создать пользователя",
+                studentUsersBtn: "Список учеников",
+                navClass: "Класс",
+                navCommunity: "L-Сообщество",
+                navTransport: "Статус транспорта",
+                navTeacherDash: "Панель учителя",
+                navAskMe: "Спроси меня!",
+                welcomeTitle: "Добро пожаловать в LateLess",
+                welcomeSubtitle: "Пунктуальность и общение — это просто",
+                googleAuthNotice: "Шаг 1: Сначала авторизуйтесь через аккаунт Google.",
+                loginWithGoogle: "Войти через Google",
+                studentLogin: "Вход для учеников",
+                teacherLogin: "Вход для учителей / Админа",
+                username: "Имя пользователя",
+                password: "Пароль",
+                loginBtn: "Войти",
+                classTitle: "Обзор классов",
+                classSubtitle: "Выберите класс, чтобы сообщить об опоздании или загрузить домашнее задание.",
+                addClass: "Новый класс",
+                backToClasses: "Назад ко всем классам",
+                addReportBtn: "Сообщить об опоздании",
+                uploadHomeworkBtn: "Загрузить дз",
+                reportsHeader: "Отправленные отчеты об опозданиях",
+                homeworkHeader: "Загруженные домашние задания",
+                communityWelcome: "Добро пожаловать в L-Сообщество",
+                communityIntro: "Если у вас есть вопрос или жалоба, напишите здесь. Учителя и участники ответят вам!",
+                postBtn: "Опубликовать",
+                transportHeader: "Статус общественного транспорта онлайн",
+                transportSub: "О каком транспорте вам нужна информация сегодня?",
+                fromLocation: "Откуда",
+                toLocation: "Куда",
+                dateLabel: "Дата",
+                timeLabel: "Время",
+                searchBtn: "Проверить",
+                teacherDashboardTitle: "Центр управления учителя",
+                dashTotalLate: "Всего опозданий",
+                dashClasses: "Активные классы",
+                delayedStudentsList: "Опоздавшие ученики",
+                homeworkOverview: "Сданные задания",
+                askMeTitle: "Спроси меня! (ИИ Помощник)",
+                askMeSubtitle: "Задавайте вопросы о правилах опозданий, автобусах или домашних заданиях.",
+                askMeWelcomeMsg: "Привет! Я твой умный школьный помощник LateLess. Чем я могу помочь тебе сегодня?"
+            }
+        };
+
+        let currentLang = "de";
+
+        // INITIAL PERSISTENT SEEDED STATE (LOCAL STORAGE FALLBACK & FIRESTORE SOURCE)
+        const defaultInitialState = {
+            googleAuthUser: null,
+            currentUser: null,
+            activeView: 'login',
+            loginRoleTab: 'student',
+            classes: [
+                { id: 'class-1', name: 'Klasse 9B' },
+                { id: 'class-2', name: 'Klasse 10A' },
+                { id: 'class-3', name: 'Physik LK 12' }
+            ],
+            selectedClassId: null,
+            reports: [
+                {
+                    id: 'rep-1',
+                    classId: 'class-2',
+                    studentUser: 'max',
+                    studentName: 'Max Mustermann',
+                    reason: 'Bus 142 hatte 20 Minuten Verspätung wegen Baustelle.',
+                    photo: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=400&q=80',
+                    timestamp: '08:15',
+                    deletedByTeacher: null
+                }
+            ],
+            homeworks: [
+                {
+                    id: 'hw-1',
+                    classId: 'class-2',
+                    studentUser: 'max',
+                    studentName: 'Max Mustermann',
+                    title: 'Mathematik Blatt 3',
+                    desc: 'Aufgabe 1 bis 4 vollständig gelöst.',
+                    timestamp: new Date().toLocaleDateString()
+                }
+            ],
+            posts: [
+                {
+                    id: 'post-1',
+                    author: 'Sabine Schmidt (Lehrerin)',
+                    authorRole: 'teacher',
+                    content: 'Erinnerung: Morgen findet der Ausflug zum Planetarium statt. Bitte seid um 08:00 Uhr pünktlich an der Haltestelle.',
+                    timestamp: 'Vor 2 Stunden',
+                    comments: [
+                        { id: 'c-1', author: 'Max Mustermann', text: 'Vielen Dank für die Erinnerung!', rating: 5 }
+                    ]
+                }
+            ],
+            usersDb: [
+                { username: 'Admin', password: 'Admin@1819', firstName: 'System', lastName: 'Admin', role: 'admin', email: 'admin@school.de' },
+                { username: 'teacher1', password: '123', firstName: 'Sabine', lastName: 'Schmidt', role: 'teacher', email: 'schmidt@school.de' },
+                { username: 'max', password: '123', firstName: 'Max', lastName: 'Mustermann', role: 'student', email: 'max@student.de' }
+            ],
+            attachedPhotoData: null
+        };
+
+        // Load stored state from localStorage first to guarantee instant cross-account persistence
+        function loadStoredState() {
+            try {
+                const stored = localStorage.getItem('lateless_db_v3');
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    
+                    // Merge local seed with stored user database so Admin/Teacher created accounts persist seamlessly
+                    const userMap = new Map();
+                    defaultInitialState.usersDb.forEach(u => userMap.set(u.username.toLowerCase(), u));
+                    if (parsed.usersDb && Array.isArray(parsed.usersDb)) {
+                        parsed.usersDb.forEach(u => userMap.set(u.username.toLowerCase(), u));
+                    }
+
+                    return {
+                        ...defaultInitialState,
+                        classes: parsed.classes || defaultInitialState.classes,
+                        reports: parsed.reports || defaultInitialState.reports,
+                        homeworks: parsed.homeworks || defaultInitialState.homeworks,
+                        posts: parsed.posts || defaultInitialState.posts,
+                        usersDb: Array.from(userMap.values())
+                    };
+                }
+            } catch(e) {
+                console.error("Local storage load error", e);
+            }
+            return defaultInitialState;
+        }
+
+        window.state = loadStoredState();
+
+        // SAVE STATE TO PERSISTENT STORES
+        window.saveToLocalStorage = function() {
+            try {
+                const dataToSave = {
+                    classes: window.state.classes,
+                    reports: window.state.reports,
+                    homeworks: window.state.homeworks,
+                    posts: window.state.posts,
+                    usersDb: window.state.usersDb
+                };
+                localStorage.setItem('lateless_db_v3', JSON.stringify(dataToSave));
+            } catch (e) {
+                console.error("Storage error:", e);
+            }
+        };
+
+        // SYNC TO CLOUD (FIRESTORE)
+        window.syncToCloud = async function() {
+            window.saveToLocalStorage();
+            if (window.db && window.doc && window.setDoc) {
+                try {
+                    const docRef = window.doc(window.db, 'artifacts', window.appId, 'public', 'data', 'appState', 'mainDoc');
+                    await window.setDoc(docRef, {
+                        classes: window.state.classes,
+                        reports: window.state.reports,
+                        homeworks: window.state.homeworks,
+                        posts: window.state.posts,
+                        usersDb: window.state.usersDb,
+                        lastUpdated: Date.now()
+                    }, { merge: true });
+                } catch(e) {
+                    console.warn("Cloud push failed, preserved locally:", e);
+                }
+            }
+        };
+
+        // UI REFRESH
+        window.refreshCurrentViews = function() {
+            if (window.state.activeView === 'class') renderClassesGrid();
+            if (window.state.activeView === 'community') renderCommunityFeed();
+            if (window.state.activeView === 'teacher-dash') renderTeacherDashboard();
+            if (window.state.selectedClassId) {
+                renderClassReports();
+                renderClassHomework();
+            }
+        };
+
+        // LANGUAGE CHANGE
+        function changeLanguage(langKey) {
+            currentLang = langKey;
+            const dict = i18n[langKey] || i18n.de;
+            
+            if (langKey === 'ar' || langKey === 'fa') {
+                document.body.classList.add('rtl');
+                document.body.classList.remove('ltr');
+            } else {
+                document.body.classList.add('ltr');
+                document.body.classList.remove('rtl');
+            }
+
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (dict[key]) {
+                    el.innerText = dict[key];
+                }
+            });
+        }
+
+        // INITIALIZE ON DOM READY
+        window.onload = function() {
+            changeLanguage('de');
+            renderUserInfo();
+
+            const now = new Date();
+            const dateStr = now.toISOString().split('T')[0];
+            const timeStr = now.toTimeString().split(' ')[0].substring(0,5);
+            if(document.getElementById('transDate')) document.getElementById('transDate').value = dateStr;
+            if(document.getElementById('transTime')) document.getElementById('transTime').value = timeStr;
+        };
+
+        // NAVIGATION CONTROL
+        function navigateTo(viewName) {
+            if (!state.currentUser && viewName !== 'login') {
+                showToast("Bitte loggen Sie sich zuerst ein!", "error");
+                return;
+            }
+
+            state.activeView = viewName;
+            
+            ['login', 'class', 'community', 'transport', 'teacher-dash', 'ask-me'].forEach(v => {
+                const el = document.getElementById(`view-${v}`);
+                if (el) el.classList.add('hidden');
+            });
+
+            const target = document.getElementById(`view-${viewName}`);
+            if (target) target.classList.remove('hidden');
+
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                if (tab.getAttribute('data-nav') === viewName) {
+                    tab.classList.add('bg-blue-600', 'text-white');
+                    tab.classList.remove('text-slate-600', 'hover:bg-slate-200');
+                } else {
+                    tab.classList.remove('bg-blue-600', 'text-white');
+                    tab.classList.add('text-slate-600', 'hover:bg-slate-200');
+                }
+            });
+
+            if (viewName === 'class') renderClassesGrid();
+            if (viewName === 'community') renderCommunityFeed();
+            if (viewName === 'teacher-dash') renderTeacherDashboard();
+        }
+
+        // GOOGLE AUTH SIMULATION
+        function simulateGoogleAuth(emailInput) {
+            const email = emailInput || (prompt("Geben Sie ein Google-Konto ein (z.B. user@gmail.com):") || "user@gmail.com");
+            const btnText = document.getElementById('googleAuthBtnText');
+            btnText.innerText = "Verbinde...";
+            
+            setTimeout(() => {
+                state.googleAuthUser = {
+                    name: "Google Authenticated User",
+                    email: email,
+                    avatar: "https://lh3.googleusercontent.com/a/default-user"
+                };
+                
+                document.getElementById('googleAccountDisplay').innerText = email;
+                showToast(`Google-Konto verifiziert: ${email}`, "success");
+                document.getElementById('googleAuthStep').classList.add('hidden');
+                document.getElementById('appAuthStep').classList.remove('hidden');
+            }, 500);
+        }
+
+        function switchGoogleAccount() {
+            state.googleAuthUser = null;
+            document.getElementById('appAuthStep').classList.add('hidden');
+            document.getElementById('googleAuthStep').classList.remove('hidden');
+            document.getElementById('googleAuthBtnText').innerText = i18n[currentLang].loginWithGoogle;
+        }
+
+        function setLoginRole(role) {
+            state.loginRoleTab = role;
+            const tabSt = document.getElementById('tabStudent');
+            const tabTe = document.getElementById('tabTeacher');
+            
+            if (role === 'student') {
+                tabSt.className = "w-1/2 py-2.5 text-center text-sm font-semibold border-b-2 border-blue-600 text-blue-600 transition-colors";
+                tabTe.className = "w-1/2 py-2.5 text-center text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors";
+            } else {
+                tabTe.className = "w-1/2 py-2.5 text-center text-sm font-semibold border-b-2 border-blue-600 text-blue-600 transition-colors";
+                tabSt.className = "w-1/2 py-2.5 text-center text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors";
+            }
+        }
+
+        // LOGIN WITH CUSTOM USERNAME & PASSWORD (ADMIN/TEACHER/STUDENT)
+        function handleAppLogin(e) {
+            e.preventDefault();
+            const uInput = document.getElementById('loginUsername').value.trim();
+            const pInput = document.getElementById('loginPassword').value.trim();
+
+            const found = state.usersDb.find(u => u.username.toLowerCase() === uInput.toLowerCase() && u.password === pInput);
+
+            if (found) {
+                state.currentUser = found;
+                showToast(`Willkommen, ${found.firstName} ${found.lastName}!`, "success");
+                
+                document.getElementById('mainNav').classList.remove('hidden');
+                renderUserInfo();
+                
+                if (found.role === 'teacher' || found.role === 'admin') {
+                    navigateTo('teacher-dash');
+                } else {
+                    navigateTo('class');
+                }
+            } else {
+                showToast("Ungültiger Benutzername oder Passwort!", "error");
+            }
+        }
+
+        function handleLogout() {
+            state.currentUser = null;
+            state.googleAuthUser = null;
+            document.getElementById('mainNav').classList.add('hidden');
+            document.getElementById('appAuthStep').classList.add('hidden');
+            document.getElementById('googleAuthStep').classList.remove('hidden');
+            document.getElementById('googleAuthBtnText').innerText = i18n[currentLang].loginWithGoogle;
+            renderUserInfo();
+            navigateTo('login');
+            showToast("Abgemeldet. Alle Daten bleiben sicher gespeichert.", "info");
+        }
+
+        // USER CREATION (ADMIN / TEACHER)
+        function openCreateUserModal() {
+            if (!state.currentUser) return;
+            const modal = document.getElementById('createUserModal');
+            const title = document.getElementById('modalUserTitle');
+            const emailGroup = document.getElementById('emailFieldGroup');
+            const roleGroup = document.getElementById('roleSelectGroup');
+
+            if (state.currentUser.role === 'admin') {
+                title.innerText = "Neuen Benutzer erstellen (Admin)";
+                emailGroup.classList.remove('hidden');
+                roleGroup.classList.remove('hidden');
+            } else if (state.currentUser.role === 'teacher') {
+                title.innerText = "Schüler-Konto erstellen (Lehrer)";
+                emailGroup.classList.add('hidden');
+                roleGroup.classList.add('hidden');
+            }
+            modal.classList.remove('hidden');
+        }
+
+        function handleCreateUser(e) {
+            e.preventDefault();
+            const fName = document.getElementById('regFirstName').value.trim();
+            const lName = document.getElementById('regLastName').value.trim();
+            const email = document.getElementById('regEmail').value.trim();
+            const uName = document.getElementById('regUsername').value.trim();
+            const pwd = document.getElementById('regPassword').value.trim();
+            
+            let role = 'student';
+            if (state.currentUser.role === 'admin') {
+                role = document.getElementById('regRole').value;
+            }
+
+            if (state.usersDb.some(u => u.username.toLowerCase() === uName.toLowerCase())) {
+                showToast("Benutzername existiert bereits!", "error");
+                return;
+            }
+
+            const newUser = { username: uName, password: pwd, firstName: fName, lastName: lName, role, email };
+            state.usersDb.push(newUser);
+            window.syncToCloud();
+            
+            closeModal('createUserModal');
+            showToast(`Benutzer ${uName} (${role}) wurde dauerhaft gespeichert!`, "success");
+            e.target.reset();
+        }
+
+        // STUDENT LIST & PASSWORD CHANGE MODAL (FOR TEACHERS & ADMINS)
+        function openStudentListModal() {
+            const modal = document.getElementById('studentListModal');
+            const tableBody = document.getElementById('studentAccountsTable');
+            tableBody.innerHTML = '';
+
+            const studentUsers = state.usersDb.filter(u => u.role === 'student');
+
+            if (studentUsers.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="4" class="p-4 text-center text-slate-400 italic">Keine Schüler-Konten vorhanden.</td></tr>`;
+            } else {
+                studentUsers.forEach(st => {
+                    const tr = document.createElement('tr');
+                    tr.className = "hover:bg-slate-50";
+                    tr.innerHTML = `
+                        <td class="p-3 font-semibold text-slate-800">${st.firstName} ${st.lastName}</td>
+                        <td class="p-3 text-slate-600 font-mono text-xs">${st.username}</td>
+                        <td class="p-3 font-mono text-xs text-indigo-600">${st.password}</td>
+                        <td class="p-3 text-right">
+                            <button onclick="changeStudentPassword('${st.username}')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-2.5 py-1 rounded-lg font-medium shadow-sm flex items-center space-x-1 ml-auto">
+                                <i class="fa-solid fa-key text-[10px]"></i>
+                                <span>Passwort Ändern</span>
+                            </button>
+                        </td>
+                    `;
+                    tableBody.appendChild(tr);
+                });
+            }
+
+            modal.classList.remove('hidden');
+        }
+
+        function changeStudentPassword(studentUsername) {
+            const student = state.usersDb.find(u => u.username.toLowerCase() === studentUsername.toLowerCase());
+            if (!student) return;
+
+            const newPwd = prompt(`Neues Passwort für Schüler "${student.firstName} ${student.lastName}" (${student.username}) eingeben:`, student.password);
+            if (newPwd && newPwd.trim()) {
+                student.password = newPwd.trim();
+                window.syncToCloud();
+                openStudentListModal();
+                showToast(`Passwort für ${student.username} erfolgreich geändert!`, "success");
+            }
+        }
+
+        // HEADER USER BAR
+        function renderUserInfo() {
+            const container = document.getElementById('userInfo');
+            const createBtn = document.getElementById('createUserBtn');
+            const viewStudentsBtn = document.getElementById('viewStudentsBtn');
+            const navTeacherDash = document.getElementById('navTeacherDash');
+
+            if (state.currentUser) {
+                if (state.currentUser.role === 'admin' || state.currentUser.role === 'teacher') {
+                    createBtn.classList.remove('hidden');
+                    viewStudentsBtn.classList.remove('hidden');
+                } else {
+                    createBtn.classList.add('hidden');
+                    viewStudentsBtn.classList.add('hidden');
+                }
+
+                if (state.currentUser.role === 'student') {
+                    navTeacherDash.classList.add('hidden');
+                } else {
+                    navTeacherDash.classList.remove('hidden');
+                }
+
+                container.innerHTML = `
+                    <div class="flex items-center space-x-2 bg-slate-100 px-3 py-1.5 rounded-xl">
+                        <div class="w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center">
+                            ${state.currentUser.firstName.charAt(0)}
+                        </div>
+                        <span class="text-xs sm:text-sm font-semibold text-slate-700 hidden md:inline">
+                            ${state.currentUser.firstName} (${state.currentUser.role})
+                        </span>
+                        <button onclick="handleLogout()" class="text-slate-400 hover:text-red-500 ml-1 text-sm">
+                            <i class="fa-solid fa-right-from-bracket"></i>
+                        </button>
+                    </div>
+                `;
+            } else {
+                createBtn.classList.add('hidden');
+                viewStudentsBtn.classList.add('hidden');
+                navTeacherDash.classList.add('hidden');
+                container.innerHTML = `
+                    <span class="text-xs text-slate-400">Nicht angemeldet</span>
+                `;
+            }
+        }
+
+        // CLASS MANAGEMENT
+        function renderClassesGrid() {
+            const grid = document.getElementById('classesGrid');
+            const addBtn = document.getElementById('addClassBtn');
+            
+            if (state.currentUser && (state.currentUser.role === 'teacher' || state.currentUser.role === 'admin')) {
+                addBtn.classList.remove('hidden');
+            } else {
+                addBtn.classList.add('hidden');
+            }
+
+            grid.innerHTML = '';
+            state.classes.forEach(c => {
+                const reportCount = state.reports.filter(r => r.classId === c.id).length;
+                const card = document.createElement('div');
+                card.className = "bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:shadow-md transition-all cursor-pointer relative flex flex-col justify-between";
+                
+                let teacherControls = '';
+                if (state.currentUser && (state.currentUser.role === 'teacher' || state.currentUser.role === 'admin')) {
+                    teacherControls = `
+                        <div class="absolute top-4 right-4 flex space-x-1" onclick="event.stopPropagation()">
+                            <button onclick="renameClass('${c.id}')" class="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-slate-100">
+                                <i class="fa-solid fa-pen text-xs"></i>
+                            </button>
+                            <button onclick="deleteClass('${c.id}')" class="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-slate-100">
+                                <i class="fa-solid fa-trash text-xs"></i>
+                            </button>
+                        </div>
+                    `;
+                }
+
+                card.innerHTML = `
+                    ${teacherControls}
+                    <div onclick="openClassDetail('${c.id}')">
+                        <div class="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center font-bold text-xl mb-4">
+                            <i class="fa-solid fa-graduation-cap"></i>
+                        </div>
+                        <h3 class="text-xl font-bold text-slate-800">${c.name}</h3>
+                        <p class="text-xs text-slate-500 mt-1">${reportCount} Verspätungsberichte</p>
+                    </div>
+                    <div onclick="openClassDetail('${c.id}')" class="mt-6 pt-4 border-t border-slate-100 flex justify-between items-center text-xs font-semibold text-blue-600">
+                        <span>Klasse öffnen</span>
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function openCreateClassModal() {
+            document.getElementById('createClassModal').classList.remove('hidden');
+        }
+
+        function handleCreateClass(e) {
+            e.preventDefault();
+            const name = document.getElementById('classNameInput').value.trim();
+            if(!name) return;
+
+            const newClass = { id: 'class-' + Date.now(), name };
+            state.classes.push(newClass);
+            window.syncToCloud();
+            closeModal('createClassModal');
+            renderClassesGrid();
+            showToast(`Klasse ${name} erfolgreich hinzugefügt!`, "success");
+            e.target.reset();
+        }
+
+        function renameClass(classId) {
+            const cls = state.classes.find(c => c.id === classId);
+            if (!cls) return;
+            const newName = prompt("Neuen Klassennamen eingeben:", cls.name);
+            if (newName && newName.trim()) {
+                cls.name = newName.trim();
+                window.syncToCloud();
+                renderClassesGrid();
+                showToast("Klassenname aktualisiert.", "info");
+            }
+        }
+
+        function deleteClass(classId) {
+            if (confirm("Möchten Sie diese Klasse wirklich löschen?")) {
+                state.classes = state.classes.filter(c => c.id !== classId);
+                window.syncToCloud();
+                renderClassesGrid();
+                showToast("Klasse gelöscht.", "info");
+            }
+        }
+
+        function openClassDetail(classId) {
+            state.selectedClassId = classId;
+            const cls = state.classes.find(c => c.id === classId);
+            if (!cls) return;
+
+            document.getElementById('currentClassName').innerText = cls.name;
+            document.getElementById('classDetailSection').classList.remove('hidden');
+            document.getElementById('classesGrid').classList.add('hidden');
+            
+            renderClassReports();
+            renderClassHomework();
+        }
+
+        function closeClassDetail() {
+            state.selectedClassId = null;
+            document.getElementById('classDetailSection').classList.add('hidden');
+            document.getElementById('classesGrid').classList.remove('hidden');
+        }
+
+        // REPORTING & PRIVACY
+        function renderClassReports() {
+            const container = document.getElementById('classReportsList');
+            container.innerHTML = '';
+
+            let filteredReports = state.reports.filter(r => r.classId === state.selectedClassId);
+
+            // STUDENT PRIVACY: Students only see their OWN reports
+            if (state.currentUser.role === 'student') {
+                filteredReports = filteredReports.filter(r => r.studentUser.toLowerCase() === state.currentUser.username.toLowerCase());
+            }
+
+            if (filteredReports.length === 0) {
+                container.innerHTML = `<p class="text-sm text-slate-400 italic">Keine Verspätungsberichte vorhanden.</p>`;
+                return;
+            }
+
+            filteredReports.forEach(rep => {
+                const isOwner = state.currentUser && state.currentUser.username.toLowerCase() === rep.studentUser.toLowerCase();
+                const isTeacher = state.currentUser && (state.currentUser.role === 'teacher' || state.currentUser.role === 'admin');
+
+                const card = document.createElement('div');
+                card.className = "p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col md:flex-row justify-between gap-4";
+
+                let deletedBadge = rep.deletedByTeacher ? 
+                    `<div class="bg-red-100 text-red-700 text-xs font-semibold px-2.5 py-1 rounded-lg inline-block mb-2">Gelöscht von ${rep.deletedByTeacher}</div>` : '';
+
+                let actions = '';
+                if (isOwner && !rep.deletedByTeacher) {
+                    actions += `<button onclick="deleteReport('${rep.id}')" class="text-xs text-red-600 hover:underline">Löschen</button>`;
+                }
+                if (isTeacher && !rep.deletedByTeacher) {
+                    actions += `<button onclick="teacherDeleteReport('${rep.id}')" class="text-xs bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded-lg font-semibold ml-2">Lehrer-Löschung</button>`;
+                }
+
+                card.innerHTML = `
+                    <div class="space-y-1">
+                        ${deletedBadge}
+                        <div class="flex items-center space-x-2">
+                            <span class="font-bold text-slate-800 text-sm">${rep.studentName}</span>
+                            <span class="text-xs text-slate-400">• ${rep.timestamp}</span>
+                        </div>
+                        <p class="text-sm text-slate-700">${rep.reason}</p>
+                    </div>
+                    ${rep.photo ? `
+                        <div class="flex-shrink-0">
+                            <img src="${rep.photo}" class="w-20 h-20 object-cover rounded-lg border border-slate-200">
+                        </div>
+                    ` : ''}
+                    <div class="flex items-end justify-end">
+                        ${actions}
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function openReportModal() {
+            document.getElementById('addReportModal').classList.remove('hidden');
+        }
+
+        function triggerCameraCapture() {
+            const simulatedCameraPhoto = "https://images.unsplash.com/photo-1570125909232-eb263c188f7e?w=400&q=80";
+            state.attachedPhotoData = simulatedCameraPhoto;
+            
+            document.getElementById('photoPreview').src = simulatedCameraPhoto;
+            document.getElementById('photoPreviewContainer').classList.remove('hidden');
+            showToast("Foto mit Kamera aufgenommen!", "info");
+        }
+
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(evt) {
+                    state.attachedPhotoData = evt.target.result;
+                    document.getElementById('photoPreview').src = evt.target.result;
+                    document.getElementById('photoPreviewContainer').classList.remove('hidden');
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function clearPhotoPreview() {
+            state.attachedPhotoData = null;
+            document.getElementById('photoPreviewContainer').classList.add('hidden');
+        }
+
+        function handleSubmitReport(e) {
+            e.preventDefault();
+            const reason = document.getElementById('reportReason').value.trim();
+            if (!reason) return;
+
+            const newRep = {
+                id: 'rep-' + Date.now(),
+                classId: state.selectedClassId,
+                studentUser: state.currentUser.username,
+                studentName: `${state.currentUser.firstName} ${state.currentUser.lastName}`,
+                reason: reason,
+                photo: state.attachedPhotoData,
+                timestamp: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                deletedByTeacher: null
+            };
+
+            state.reports.push(newRep);
+            window.syncToCloud();
+            closeModal('addReportModal');
+            clearPhotoPreview();
+            renderClassReports();
+            showToast("Verspätung erfolgreich gemeldet!", "success");
+            e.target.reset();
+        }
+
+        function deleteReport(reportId) {
+            state.reports = state.reports.filter(r => r.id !== reportId);
+            window.syncToCloud();
+            renderClassReports();
+            showToast("Bericht gelöscht.", "info");
+        }
+
+        function teacherDeleteReport(reportId) {
+            const rep = state.reports.find(r => r.id === reportId);
+            if (rep) {
+                rep.deletedByTeacher = `${state.currentUser.firstName} ${state.currentUser.lastName}`;
+                window.syncToCloud();
+                renderClassReports();
+                showToast(`Gelöscht von ${rep.deletedByTeacher}`, "info");
+            }
+        }
+
+        // HOMEWORK HANDLING
+        function openHomeworkModal() {
+            document.getElementById('uploadHomeworkModal').classList.remove('hidden');
+        }
+
+        function handleSubmitHomework(e) {
+            e.preventDefault();
+            const title = document.getElementById('hwTitle').value.trim();
+            const desc = document.getElementById('hwDesc').value.trim();
+
+            const newHw = {
+                id: 'hw-' + Date.now(),
+                classId: state.selectedClassId,
+                studentUser: state.currentUser.username,
+                studentName: `${state.currentUser.firstName} ${state.currentUser.lastName}`,
+                title: title,
+                desc: desc,
+                timestamp: new Date().toLocaleDateString()
+            };
+
+            state.homeworks.push(newHw);
+            window.syncToCloud();
+            closeModal('uploadHomeworkModal');
+            renderClassHomework();
+            showToast("Hausaufgabe erfolgreich eingereicht!", "success");
+            e.target.reset();
+        }
+
+        function renderClassHomework() {
+            const container = document.getElementById('classHomeworkList');
+            container.innerHTML = '';
+
+            let filteredHw = state.homeworks.filter(h => h.classId === state.selectedClassId);
+            
+            if (state.currentUser.role === 'student') {
+                filteredHw = filteredHw.filter(h => h.studentUser.toLowerCase() === state.currentUser.username.toLowerCase());
+            }
+
+            if (filteredHw.length === 0) {
+                container.innerHTML = `<p class="text-sm text-slate-400 italic col-span-full">Keine Hausaufgaben vorhanden.</p>`;
+                return;
+            }
+
+            filteredHw.forEach(hw => {
+                const item = document.createElement('div');
+                item.className = "bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2";
+                item.innerHTML = `
+                    <div class="flex items-center space-x-2 text-indigo-600 font-bold text-sm">
+                        <i class="fa-solid fa-file-lines"></i>
+                        <span>${hw.title}</span>
+                    </div>
+                    <p class="text-xs text-slate-600">${hw.desc || 'Keine Beschreibung'}</p>
+                    <div class="pt-2 border-t border-slate-200 text-xs text-slate-400 flex justify-between">
+                        <span>${hw.studentName}</span>
+                        <span>${hw.timestamp}</span>
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // COMMUNITY FEED & RATING SYSTEM
+        function renderCommunityFeed() {
+            const container = document.getElementById('communityFeed');
+            container.innerHTML = '';
+
+            state.posts.forEach(post => {
+                const card = document.createElement('div');
+                card.className = "bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4";
+                
+                const isCreator = state.currentUser && state.currentUser.firstName && post.author.includes(state.currentUser.firstName);
+
+                let commentsHtml = '';
+                post.comments.forEach(c => {
+                    let stars = '';
+                    for (let i = 1; i <= 5; i++) {
+                        stars += `<i class="fa-star ${i <= c.rating ? 'fa-solid text-amber-400' : 'fa-regular text-slate-300'} text-xs"></i>`;
+                    }
+                    commentsHtml += `
+                        <div class="bg-slate-50 p-3 rounded-xl text-xs space-y-1">
+                            <div class="flex justify-between items-center font-semibold text-slate-700">
+                                <span>${c.author}</span>
+                                <div>${stars}</div>
+                            </div>
+                            <p class="text-slate-600">${c.text}</p>
+                        </div>
+                    `;
+                });
+
+                card.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 font-bold flex items-center justify-center">
+                                ${post.author.charAt(0)}
+                            </div>
+                            <div>
+                                <h4 class="font-bold text-slate-800 text-sm">${post.author}</h4>
+                                <span class="text-xs text-slate-400">${post.timestamp}</span>
+                            </div>
+                        </div>
+                        ${isCreator ? `
+                            <div class="flex space-x-2 text-xs">
+                                <button onclick="editPost('${post.id}')" class="text-blue-600 hover:underline">Bearbeiten</button>
+                                <button onclick="deletePost('${post.id}')" class="text-red-600 hover:underline">Löschen</button>
+                            </div>
+                        ` : ''}
+                    </div>
+
+                    <p class="text-sm text-slate-700 leading-relaxed">${post.content}</p>
+
+                    <div class="pt-4 border-t border-slate-100 space-y-3">
+                        <h5 class="text-xs font-bold text-slate-500 uppercase">Kommentare (${post.comments.length})</h5>
+                        <div class="space-y-2">
+                            ${commentsHtml}
+                        </div>
+
+                        <form onsubmit="handleAddComment(event, '${post.id}')" class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2">
+                            <input type="text" placeholder="Kommentar schreiben..." required class="comment-input flex-grow px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none focus:ring-2 focus:ring-blue-500">
+                            
+                            <select class="rating-select px-2.5 py-2 rounded-xl border border-slate-200 text-xs outline-none bg-slate-50 font-medium">
+                                <option value="5">⭐⭐⭐⭐⭐ (5)</option>
+                                <option value="4">⭐⭐⭐⭐ (4)</option>
+                                <option value="3">⭐⭐⭐ (3)</option>
+                                <option value="2">⭐⭐ (2)</option>
+                                <option value="1">⭐ (1)</option>
+                            </select>
+
+                            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-xl">Antworten</button>
+                        </form>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function handleCreatePost(e) {
+            e.preventDefault();
+            const content = document.getElementById('postContent').value.trim();
+            if(!content) return;
+
+            const newPost = {
+                id: 'post-' + Date.now(),
+                author: `${state.currentUser.firstName} ${state.currentUser.lastName} (${state.currentUser.role === 'teacher' ? 'Lehrer' : 'Schüler'})`,
+                authorRole: state.currentUser.role,
+                content: content,
+                timestamp: 'Gerade eben',
+                comments: []
+            };
+
+            state.posts.unshift(newPost);
+            window.syncToCloud();
+            renderCommunityFeed();
+            showToast("Beitrag veröffentlicht!", "success");
+            e.target.reset();
+        }
+
+        function handleAddComment(e, postId) {
+            e.preventDefault();
+            const input = e.target.querySelector('.comment-input');
+            const ratingSelect = e.target.querySelector('.rating-select');
+            const text = input.value.trim();
+            const rating = parseInt(ratingSelect.value);
+
+            const post = state.posts.find(p => p.id === postId);
+            if (post && text) {
+                post.comments.push({
+                    id: 'c-' + Date.now(),
+                    author: `${state.currentUser.firstName} ${state.currentUser.lastName}`,
+                    text: text,
+                    rating: rating
+                });
+                window.syncToCloud();
+                renderCommunityFeed();
+                showToast("Kommentar hinzugefügt!", "success");
+            }
+        }
+
+        function editPost(postId) {
+            const post = state.posts.find(p => p.id === postId);
+            if (!post) return;
+            const newContent = prompt("Beitrag bearbeiten:", post.content);
+            if (newContent && newContent.trim()) {
+                post.content = newContent.trim();
+                window.syncToCloud();
+                renderCommunityFeed();
+                showToast("Beitrag aktualisiert.", "info");
+            }
+        }
+
+        function deletePost(postId) {
+            if (confirm("Möchten Sie Ihren Beitrag wirklich löschen?")) {
+                state.posts = state.posts.filter(p => p.id !== postId);
+                window.syncToCloud();
+                renderCommunityFeed();
+                showToast("Beitrag gelöscht.", "info");
+            }
+        }
+
+        // PUBLIC TRANSPORT AI STATUS (GEMINI API)
+        async function handleTransportSearch(e) {
+            e.preventDefault();
+            const from = document.getElementById('transFrom').value.trim();
+            const to = document.getElementById('transTo').value.trim();
+            const date = document.getElementById('transDate').value;
+            const time = document.getElementById('transTime').value;
+
+            const resultContainer = document.getElementById('transportResult');
+            resultContainer.classList.remove('hidden');
+            resultContainer.innerHTML = `
+                <div class="flex items-center space-x-3 text-blue-600">
+                    <i class="fa-solid fa-spinner fa-spin text-2xl"></i>
+                    <span class="text-sm font-semibold">Frage Live-ÖPNV-Daten und Verspätungen ab...</span>
+                </div>
+            `;
+
+            const promptText = `Provide real-time public transit status and delay updates for travel from "${from}" to "${to}" on date ${date} at ${time}. Respond in ${currentLang} language. Format clearly with route line numbers, delay status (in minutes), and alternate options if delayed.`;
+
+            try {
+                const apiKey = "AQ.Ab8RN6IVp75d61fESYHBQKX-DNVJrK-ez-I2Y3yxZhky9rOMUg";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: promptText }] }],
+                        tools: [{ "google_search": {} }]
+                    })
+                });
+
+                const data = await response.json();
+                const aiOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                if (aiOutput) {
+                    resultContainer.innerHTML = `
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                                <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Ergebnis für: ${from} ➔ ${to}</span>
+                                <span class="bg-emerald-100 text-emerald-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">Live Synchronisiert</span>
+                            </div>
+                            <div class="prose text-sm text-slate-700 leading-relaxed whitespace-pre-line">
+                                ${aiOutput}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    throw new Error("Fehler bei der Datenabfrage");
+                }
+            } catch (err) {
+                resultContainer.innerHTML = `
+                    <div class="space-y-3">
+                        <div class="flex items-center space-x-2 text-amber-600 font-bold text-sm">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span>Bus 142 (Richtung Schulzentrum): +12 Min. Verspätung</span>
+                        </div>
+                        <p class="text-sm text-slate-600">Grund: Baustelle am Hbf. Alternative Verbindung: Straßenbahn Line 3 ab Parkstraße um ${time}.</p>
+                    </div>
+                `;
+            }
+        }
+
+        // TEACHER DASHBOARD
+        function renderTeacherDashboard() {
+            document.getElementById('dashTotalReports').innerText = state.reports.length;
+            document.getElementById('dashTotalClasses').innerText = state.classes.length;
+
+            const lateTbody = document.getElementById('dashLateTable');
+            lateTbody.innerHTML = '';
+            
+            state.reports.slice(0, 10).forEach(rep => {
+                const cls = state.classes.find(c => c.id === rep.classId);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="p-2.5 font-semibold text-slate-800">${rep.studentName}</td>
+                    <td class="p-2.5">${cls ? cls.name : 'Unbekannt'}</td>
+                    <td class="p-2.5 text-xs text-slate-600 max-w-xs truncate">${rep.reason}</td>
+                    <td class="p-2.5">
+                        <button onclick="teacherDeleteReport('${rep.id}')" class="text-xs text-red-600 hover:underline">Entfernen</button>
+                    </td>
+                `;
+                lateTbody.appendChild(tr);
+            });
+
+            const hwTbody = document.getElementById('dashHomeworkTable');
+            hwTbody.innerHTML = '';
+
+            state.homeworks.slice(0, 10).forEach(hw => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="p-2.5 font-semibold text-slate-800">${hw.studentName}</td>
+                    <td class="p-2.5">${hw.title}</td>
+                    <td class="p-2.5 text-xs text-blue-600 font-medium">Document.pdf</td>
+                    <td class="p-2.5">
+                        <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Eingereicht</span>
+                    </td>
+                `;
+                hwTbody.appendChild(tr);
+            });
+        }
+
+        // ASK ME! CHAT (GEMINI AI)
+        async function handleAskMeSubmit(e) {
+            e.preventDefault();
+            const inputEl = document.getElementById('askMeInput');
+            const prompt = inputEl.value.trim();
+            if (!prompt) return;
+
+            const chatWin = document.getElementById('chatMessages');
+
+            const userMsg = document.createElement('div');
+            userMsg.className = "flex items-start space-x-3 justify-end";
+            userMsg.innerHTML = `
+                <div class="bg-blue-600 text-white p-3.5 rounded-2xl text-sm max-w-lg shadow-sm">
+                    ${prompt}
+                </div>
+            `;
+            chatWin.appendChild(userMsg);
+            inputEl.value = '';
+            chatWin.scrollTop = chatWin.scrollHeight;
+
+            const loadingMsg = document.createElement('div');
+            loadingMsg.className = "flex items-start space-x-3";
+            loadingMsg.innerHTML = `
+                <div class="w-8 h-8 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">KI</div>
+                <div class="bg-white p-3.5 rounded-2xl shadow-sm text-sm text-slate-500 flex items-center space-x-2">
+                    <i class="fa-solid fa-spinner fa-spin"></i>
+                    <span>Antwort wird generiert...</span>
+                </div>
+            `;
+            chatWin.appendChild(loadingMsg);
+            chatWin.scrollTop = chatWin.scrollHeight;
+
+            try {
+                const apiKey = "AQ.Ab8RN6IVp75d61fESYHBQKX-DNVJrK-ez-I2Y3yxZhky9rOMUg";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        systemInstruction: {
+                            parts: [{ text: `You are the AI Assistant for the LateLess app. Help school students and teachers with advice regarding lateness rules, homework management, public transport excuses, and general educational guidance. Answer concisely in language: ${currentLang}.` }]
+                        }
+                    })
+                });
+
+                const data = await response.json();
+                const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                chatWin.removeChild(loadingMsg);
+
+                const aiMsg = document.createElement('div');
+                aiMsg.className = "flex items-start space-x-3";
+                aiMsg.innerHTML = `
+                    <div class="w-8 h-8 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">KI</div>
+                    <div class="bg-white p-4 rounded-2xl shadow-sm text-sm text-slate-700 max-w-lg border border-slate-100 whitespace-pre-line">
+                        ${aiResponse || 'Entschuldigung, ich konnte keine Antwort generieren.'}
+                    </div>
+                `;
+                chatWin.appendChild(aiMsg);
+            } catch (err) {
+                chatWin.removeChild(loadingMsg);
+                showToast("Fehler bei der KI-Antwort.", "error");
+            }
+
+            chatWin.scrollTop = chatWin.scrollHeight;
+        }
+
+        // UTILITY FUNCTIONS
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        function showToast(msg, type = 'info') {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toastMsg');
+            const toastIcon = document.getElementById('toastIcon');
+
+            toastMsg.innerText = msg;
+            if (type === 'error') {
+                toastIcon.className = 'fa-solid fa-circle-xmark text-red-400';
+            } else if (type === 'success') {
+                toastIcon.className = 'fa-solid fa-circle-check text-emerald-400';
+            } else {
+                toastIcon.className = 'fa-solid fa-circle-info text-blue-400';
+            }
+
+            toast.classList.remove('hidden');
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
